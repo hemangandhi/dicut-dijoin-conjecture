@@ -41,6 +41,7 @@ var Heap = function (cmp) {
     };
     this.pop = function () {
 	if (list.length == 0) return null;
+	if (list.length == 1) return list.pop();
 	var max = list[0];
 	list[0] = list.pop();
 	var i, l, r;
@@ -70,6 +71,28 @@ var Heap = function (cmp) {
 // They are either represented as a Map<K, Set<K>> if there's no weight or
 // Map<K, Map<K, W>> if it is weighted (K is the key type, usually strings, and
 // W is the weight type, usually numeric).
+
+var edgeSet = function(graph) {
+    var sources = new Set();
+    for (const [source, dests] of graph) {
+	sources.add(source);
+	for(const dest of dests.keys()) {
+	    sources.add(dest);
+	}
+    }
+    return sources;
+};
+
+var getARootVertex = function(dag) {
+    var maybe_roots = new Set(dag.keys());
+    for (const [r, neighbours] of dag) {
+	for (const neighbour of neighbours.keys()) {
+	    maybe_roots.delete(neighbour);
+	}
+    }
+    return maybe_roots.keys().next().value;
+};
+
 var isWeaklyConnected = function(graph) {
     var reversed_edges = new Map();
     var unvisiteds = new Set();
@@ -268,14 +291,20 @@ var dicut = function(scc_graph, scc_edges) {
 	    var min_edge = null;
 	    for (var s = target; s != source && path.has(s); s = path.get(s)) {
 		var weight = path_flow.get(path.get(s)).get(s);
-		if (min_wt == -1 || weight < min_wt) {
+		if (min_wt == -1 || (weight < min_wt && weight > 0)) {
 		    min_wt = weight;
 		    min_edge = [path.get(s), s];
 		}
 	    }
 	    // The only flow is on reversed edges -- let's not cut those.
 	    // And, yeah, fuck it, we'll just abandon our search at that point.
-	    if (min_wt <= 0) break;
+	    if (min_wt <= 0) {
+		// OK, this is an error, but it's not one I
+		// want a user to understand.
+		console.log("Path only passes reversed edges");
+		console.log(path);
+		break;
+	    }
 	    max_flow += min_wt;
 	    cut_edges.push(min_edge);
 	    for (var s = target; s != source && path.has(s); s = path.get(s)) {
@@ -297,15 +326,13 @@ var dicut = function(scc_graph, scc_edges) {
 
     var min_dicut = -1;
     var cut_edges = [];
-    var some_source = scc_graph.keys().next().value;
-    for (const [v, some_dests] of scc_graph) {
-	for (const some_dest of some_dests.keys()) {
-	    if (some_dest == some_source) continue;
-	    var flow = fordFulkerson(scc_graph, some_source, some_dest);
-	    if (min_dicut == -1 || flow[0] < min_dicut) {
-		min_dicut = flow[0];
-		cut_edges = flow[1];
-	    }
+    var some_source = getARootVertex(scc_graph);
+    for (some_dest of edgeSet(scc_graph).keys()) {
+	if (some_dest == some_source) continue;
+	var flow = fordFulkerson(scc_graph, some_source, some_dest);
+	if (min_dicut == -1 || flow[0] < min_dicut) {
+	    min_dicut = flow[0];
+	    cut_edges = flow[1];
 	}
     }
     return [min_dicut, augmentEdgeSet(scc_edges, cut_edges)];
@@ -406,6 +433,14 @@ var getDisjointDijoins = function(graph, scc_dag, sccs, dicut_edge_set) {
 	this.edges = function () {
 	    return edge_array;
 	};
+	this.debugLog = function () {
+	    console.log({
+		edges: this.edges(),
+		neediness: this.neediness(),
+		error: this.error
+	    });
+	    console.log(this.edges().join(", "));
+	}; 
 
 	this.grow = function() {
 	    if (neediness == 0) return;
@@ -468,7 +503,6 @@ var getDisjointDijoins = function(graph, scc_dag, sccs, dicut_edge_set) {
 	} else {
 	    growing_dijoins.push(dj);
 	}
-	break;
     }
     return [true, done_dijoins];
 };
