@@ -83,15 +83,21 @@ var edgeSet = function(graph) {
     return sources;
 };
 
-var getARootVertex = function(dag) {
-    var maybe_roots = new Set(dag.keys());
-    for (const [r, neighbours] of dag) {
-	for (const neighbour of neighbours.keys()) {
-	    maybe_roots.delete(neighbour);
+var setSourcesAndSinks = function(graph, sources, sinks) {
+    var maybe_source = new Set(graph.keys());
+    for (const [src, neighbors] of graph) {
+	for (const [neighbor, w] of neighbors) {
+	    sinks.add(neighbor);
+	    maybe_source.delete(neighbor);
 	}
     }
-    return maybe_roots.keys().next().value;
-};
+    for (const source of maybe_source) {
+	sources.add(source);
+    }
+    for (const non_sink of graph.keys()) {
+	sinks.delete(non_sink);
+    }
+}
 
 var isWeaklyConnected = function(graph) {
     var reversed_edges = new Map();
@@ -223,7 +229,7 @@ var getDAGsOfSCCs = function(graph, sccs) {
 //
 // Returns both the size of the dicut and (a guess of) the edges in the original graph
 // that would be cut.
-var dicut = function(scc_graph, scc_edges) {
+var dicut = function(scc_graph, scc_edges, display_manager, node_id_sanitizer) {
     // Converts a dicut expressed as cuts in the SCC DAG
     var augmentEdgeSet = function(scc_edges, edge_set) {
 	var aug = [];
@@ -287,6 +293,7 @@ var dicut = function(scc_graph, scc_edges) {
 	var i = 0;
 	for (var path = bfs(path_flow, source, target); path != null && i < 3;
 	     path = bfs(path_flow, source, target), i++) {
+	    display_manager.pushState("path: " + sanitizeNodeToNodeMap(node_id_sanitizer, path));
 	    var min_wt = -1;
 	    var min_edge = null;
 	    for (var s = target; s != source && path.has(s); s = path.get(s)) {
@@ -301,8 +308,7 @@ var dicut = function(scc_graph, scc_edges) {
 	    if (min_wt <= 0) {
 		// OK, this is an error, but it's not one I
 		// want a user to understand.
-		console.log("Path only passes reversed edges");
-		console.log(path);
+		display_manager.setError("Path only passes reversed edges");
 		break;
 	    }
 	    max_flow += min_wt;
@@ -320,22 +326,32 @@ var dicut = function(scc_graph, scc_edges) {
 		    path_flow.get(s).set(p, weight + min_wt);
 		}
 	    }
+	    display_manager.popState();
 	} // for each BFS path
 	return [max_flow, cut_edges];
     };
 
+    display_manager.pushState("Computing dicut");
     var min_dicut = -1;
     var cut_edges = [];
-    var some_source = getARootVertex(scc_graph);
-    for (some_dest of edgeSet(scc_graph).keys()) {
-	if (some_dest == some_source) continue;
-	var flow = fordFulkerson(scc_graph, some_source, some_dest);
-	if (min_dicut == -1 || flow[0] < min_dicut) {
-	    min_dicut = flow[0];
-	    cut_edges = flow[1];
+    var sources = new Set();
+    var sinks = new Set();
+    setSourcesAndSinks(scc_graph, sources, sinks);
+    for (const source of sources) {
+	for (const sink of sinks) {
+	    if (sink == source) continue;
+	    display_manager.pushState(
+		"Getting flow from " + node_id_sanitizer(source) + " to " + node_id_sanitizer(sink));
+	    var flow = fordFulkerson(scc_graph, source, sink);
+	    if (min_dicut == -1 || flow[0] < min_dicut) {
+		min_dicut = flow[0];
+		cut_edges = flow[1];
+	    }
+	    display_manager.popState();
 	}
     }
-    return [min_dicut, augmentEdgeSet(scc_edges, cut_edges)];
+    display_manager.popState();
+    display_manager.setDicutState(augmentEdgeSet(scc_edges, cut_edges));
 };
 
 // Conjecture: the Woodhall conjecture holds and a set of disjoint dijoins of
@@ -343,8 +359,9 @@ var dicut = function(scc_graph, scc_edges) {
 // the furthest away from being a dijoin by adding the set that connects it
 // the most (of edges not already in another dijoin) until all the edges in
 // the dicut have expanded to form the disjoint dijoins.
-var getDisjointDijoins = function(graph, scc_dag, sccs, dicut_edge_set) {
+var getDisjointDijoins = function(graph, scc_dag, sccs, display_manager) {
     // Set of edges used by some dijoin in this pool
+    var dicut_edge_set = display_manager.getDicutState();
     var pool_allocation = new Set();
     var addEdgeToPool = function (edge) {
 	var og_edge_id = edge[0] + edge[1];
@@ -360,6 +377,7 @@ var getDisjointDijoins = function(graph, scc_dag, sccs, dicut_edge_set) {
 	var edge_array = [];
 	// TODO: is there a faster shallow copy?
 	var my_sccs = new Map();
+	var my_sanitizer = display_manager.makeNodeSanitizer(my_sccs);
 	for (const [vertex, scc_id] of sccs) {
 	    my_sccs.set(vertex, scc_id);
 	}
@@ -415,13 +433,13 @@ var getDisjointDijoins = function(graph, scc_dag, sccs, dicut_edge_set) {
 		var new_state = supposeConnected(edge, curr_dag);
 		neediness = new_state.neediness;
 		my_sccs = new_state.sccs;
+		my_sanitizer = display_manager.makeNodeSanitizer(my_sccs);
 	    }
 	    edge_array.push(edge);
 	    return true;
 	};
-	this.error = "";
 	if (!addEdge(init_edge)) {
-	    this.error = "Could not add dicut edge " + init_edge;
+	    display_manager.setError("Could not add dicut edge " + sanitizeEdgePair(my_sanitizer, init_edge));
 	}
 
 	this.is_dijoin = function() {
@@ -433,17 +451,10 @@ var getDisjointDijoins = function(graph, scc_dag, sccs, dicut_edge_set) {
 	this.edges = function () {
 	    return edge_array;
 	};
-	this.debugLog = function () {
-	    console.log({
-		edges: this.edges(),
-		neediness: this.neediness(),
-		error: this.error
-	    });
-	    console.log(this.edges().join(", "));
-	}; 
 
 	this.grow = function() {
 	    if (neediness == 0) return;
+	    display_manager.pushState("Growing dicut: " + sanitizeSetOfEdges(my_sanitizer, edge_array)); 
 	    var [scc_dag, grouped_edges] = getDAGsOfSCCs(graph, my_sccs);
 	    var curr_min = null;
 	    for (const [src, src_n] of grouped_edges) {
@@ -464,15 +475,17 @@ var getDisjointDijoins = function(graph, scc_dag, sccs, dicut_edge_set) {
 		}
 	    }
 	    if (curr_min == null) {
-		this.error = "No feasible edges to grow along";
+		display_manager.setError("No feasible edges to grow along");
 		return;
 	    } else if (!addEdgeToPool(curr_min.edge)) {
-		this.error = "Edge " + curr_min.edge + " pooled at a weird time";
+		display_manager.setError("Edge " + curr_min.edge + " pooled at a weird time");
 		return;
 	    }
 	    edge_array.push(curr_min.edge);
 	    neediness = curr_min.neediness;
 	    my_sccs = curr_min.sccs;
+	    my_sanitizer = display_manager.makeNodeSanitizer(my_sccs);
+	    display_manager.popState();
 	};
     };
     
@@ -480,10 +493,11 @@ var getDisjointDijoins = function(graph, scc_dag, sccs, dicut_edge_set) {
 	return l.neediness() > r.neediness();
     });
     var done_dijoins = [];
+    display_manager.pushState("Building dijoins");
     for (const cut_edge of dicut_edge_set) {
 	var dj = new GrowingDijoin(cut_edge);
-	if (dj.error.length > 0) {
-	    return [false, dj.error];
+	if (display_manager.getError()) {
+	    return;
 	}
 	if (dj.is_dijoin()) {
 	    done_dijoins.push(dj.edges());
@@ -491,11 +505,13 @@ var getDisjointDijoins = function(graph, scc_dag, sccs, dicut_edge_set) {
 	    growing_dijoins.push(dj);
 	}
     }
+    display_manager.popState();
+    display_manager.pushState("Expanding dijoins");
     while (!growing_dijoins.empty()) {
 	var dj = growing_dijoins.pop();
 	dj.grow();
-	if (dj.error.length > 0) {
-	    return [false, dj.error];
+	if (display_manager.getError()) {
+	    return;
 	}
 	if (dj.is_dijoin()) {
 	    var edges = dj.edges();
@@ -504,35 +520,27 @@ var getDisjointDijoins = function(graph, scc_dag, sccs, dicut_edge_set) {
 	    growing_dijoins.push(dj);
 	}
     }
-    return [true, done_dijoins];
+    display_manager.popState();
+    display_manager.setDijoinState(done_dijoins);
 };
 
-var getGraphConjectureInfo = function(graph) {
-    if (graph.size == 0) return {
-	is_error: true,
-	error_msg: "You seem to have emptied the graph out. Please add nodes and edges to verify the conjecture."
-    };
-    if (!isWeaklyConnected(graph)) return {
-	is_error: true,
-	error_msg: "Graph isn't connected yet. Please add more edges to weakly connect the graph."
-    };
-    var sccs = getSCCs(graph);
-    if ((new Set(sccs.values())).size == 1) return {
-	is_error: true,
-	error_msg: "The graph seems to be an SCC, so the conjecture is trivially true."
-    };
-    var [dag, edges] = getDAGsOfSCCs(graph, sccs);
-    var [dicut_size, dicut_edges] = dicut(dag, edges);
-    var [is_ok, val] = getDisjointDijoins(graph, dag, sccs, dicut_edges);
-    if (!is_ok) {
-	return {
-	    is_error: true,
-	    error_msg: val
-	};
+var getGraphConjectureInfo = function(graph, display_manager) {
+    if (graph.size == 0) {
+	display_manager.setError("You seemed to have emptied the graph out, please add edges!");
+	return;
     }
-    return {
-	is_error: false,
-	dicut_edges: dicut_edges,
-	disjoint_dijoins: val
-    };
+    if (!isWeaklyConnected(graph)) {
+	display_manager.setError("Graph isn't connected yet. Please add more edges to weakly connect the graph.");
+	return;
+    }
+    var sccs = getSCCs(graph);
+    if ((new Set(sccs.values())).size == 1) {
+	display_manager.setError("The graph seems to be an SCC, so the conjecture is trivially true.");
+	return;
+    }
+    var sanitizer = display_manager.makeNodeSanitizer(sccs);
+    var [dag, edges] = getDAGsOfSCCs(graph, sccs);
+    dicut(dag, edges, display_manager, sanitizer);
+    if (display_manager.getError()) return;
+    getDisjointDijoins(graph, dag, sccs, display_manager);
 };
