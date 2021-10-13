@@ -298,7 +298,9 @@ var dicut = function(scc_graph, scc_edges, display_manager, node_id_sanitizer) {
 	    var min_edge = null;
 	    for (var s = target; s != source && path.has(s); s = path.get(s)) {
 		var weight = path_flow.get(path.get(s)).get(s);
-		if (min_wt == -1 || (weight < min_wt && weight > 0)) {
+		// Other jank: let's see what happens if we tend to pick the smallest
+		// edge closest to the source.
+		if (min_wt == -1 || (weight <= min_wt && weight > 0)) {
 		    min_wt = weight;
 		    min_edge = [path.get(s), s];
 		}
@@ -312,7 +314,9 @@ var dicut = function(scc_graph, scc_edges, display_manager, node_id_sanitizer) {
 		break;
 	    }
 	    max_flow += min_wt;
-	    cut_edges.push(min_edge);
+	    if (min_wt == 1) {
+		cut_edges.push(min_edge);
+	    }
 	    for (var s = target; s != source && path.has(s); s = path.get(s)) {
 		var p = path.get(s);
 		var weight = path_flow.get(p).get(s);
